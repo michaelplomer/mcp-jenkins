@@ -1,5 +1,6 @@
 import re
 from functools import reduce
+from json import JSONDecodeError
 from typing import Literal
 
 import requests
@@ -19,6 +20,43 @@ from mcp_jenkins.jenkins.model.item import (
 )
 from mcp_jenkins.jenkins.model.node import Node
 from mcp_jenkins.jenkins.model.queue import Queue, QueueItem
+
+_BODY_PREVIEW_LIMIT = 2048
+
+
+class JenkinsResponseError(Exception):
+    """Raised when a Jenkins response cannot be parsed as JSON."""
+
+    def __init__(self, message: str, status_code: int, body_preview: str, url: str) -> None:
+        self.status_code = status_code
+        self.body_preview = body_preview
+        self.url = url
+        super().__init__(message)
+
+
+def _safe_json(response: Response) -> dict:
+    """Parse JSON from a response, raising a descriptive error with body preview on failure."""
+    try:
+        return response.json()
+    except (JSONDecodeError, ValueError) as exc:
+        body = response.text[:_BODY_PREVIEW_LIMIT]
+        content_type = response.headers.get('Content-Type', '(missing)')
+        logger.error(
+            f'JSON parse failed for {response.request.method} {response.url} '
+            f'(status={response.status_code}, content-type={content_type}): {exc}\n'
+            f'Response body (first {_BODY_PREVIEW_LIMIT} chars):\n{body}'
+        )
+        raise JenkinsResponseError(
+            message=(
+                f'Expected JSON from {response.url} but got {content_type} '
+                f'(status {response.status_code}). '
+                f'This may indicate an IAP login redirect or an HTML error page. '
+                f'Body preview: {body[:256]}'
+            ),
+            status_code=response.status_code,
+            body_preview=body,
+            url=str(response.url),
+        ) from exc
 
 
 class Jenkins:
@@ -128,7 +166,7 @@ class Jenkins:
         if self._crumb_header is None:
             try:
                 response = self.request('GET', rest_endpoint.CRUMB, crumb=False)
-                crumb = response.json()
+                crumb = _safe_json(response)
                 self._crumb_header = {crumb['crumbRequestField']: crumb['crumb']}
             except HTTPError as e:
                 if e.response.status_code == 404:
@@ -175,7 +213,7 @@ class Jenkins:
             A list of dictionaries with 'name' and 'url' for each view.
         """
         response = self.request('GET', rest_endpoint.VIEWS)
-        return response.json().get('views', [])
+        return _safe_json(response).get('views', [])
 
     def get_view(self, *, view_path: str, depth: int = 0) -> dict:
         """Get a specific view by path.
@@ -192,7 +230,7 @@ class Jenkins:
         """
         url_path = self._build_view_path(view_path)
         response = self.request('GET', rest_endpoint.VIEW(view_path=url_path, depth=depth))
-        return response.json()
+        return _safe_json(response)
 
     def get_queue(self, *, depth: int = 1) -> Queue:
         """Get queue.
@@ -204,7 +242,7 @@ class Jenkins:
             A list of QueueItem objects.
         """
         response = self.request('GET', rest_endpoint.QUEUE(depth=depth))
-        return Queue.model_validate(response.json())
+        return Queue.model_validate(_safe_json(response))
 
     def get_queue_item(self, *, id: int, depth: int = 0) -> 'QueueItem':
         """Get a queue item by its ID.
@@ -217,7 +255,7 @@ class Jenkins:
             The QueueItem object.
         """
         response = self.request('GET', rest_endpoint.QUEUE_ITEM(id=id, depth=depth))
-        return QueueItem.model_validate(response.json())
+        return QueueItem.model_validate(_safe_json(response))
 
     def cancel_queue_item(self, *, id: int) -> None:
         """Cancel a queue item by its ID.
@@ -239,7 +277,7 @@ class Jenkins:
         """
         name = '(master)' if name in ('master', 'Built-In Node') else name
         response = self.request('GET', rest_endpoint.NODE(name=name, depth=depth))
-        return Node.model_validate(response.json())
+        return Node.model_validate(_safe_json(response))
 
     def get_nodes(self, *, depth: int = 0) -> list[Node]:
         """Get a list of nodes connected to the Master
@@ -251,7 +289,7 @@ class Jenkins:
             A list of Node objects.
         """
         response = self.request('GET', rest_endpoint.NODES(depth=depth))
-        return [Node.model_validate(node) for node in response.json()['computer']]
+        return [Node.model_validate(node) for node in _safe_json(response)['computer']]
 
     def get_node_config(self, *, name: str) -> str:
         """Get the configuration for a node.
@@ -295,7 +333,7 @@ class Jenkins:
             'GET',
             rest_endpoint.BUILD(folder=folder, name=name, number=number, depth=depth),
         )
-        return Build.model_validate(response.json())
+        return Build.model_validate(_safe_json(response))
 
     def get_build_console_output(
         self,
@@ -391,7 +429,7 @@ class Jenkins:
             rest_endpoint.BUILD_PARAMETERS(folder=folder, name=name, number=number),
         )
 
-        for action in response.json().get('actions', []):
+        for action in _safe_json(response).get('actions', []):
             if 'parameters' in action:
                 return {p['name']: p.get('value') for p in action['parameters']}
         return {}
@@ -412,7 +450,7 @@ class Jenkins:
             'GET',
             rest_endpoint.BUILD_TEST_REPORT(folder=folder, name=name, number=number, depth=depth),
         )
-        return response.json()
+        return _safe_json(response)
 
     def get_build_artifacts(self, *, fullname: str, number: int) -> list[Artifact]:
         """Get the list of artifacts from a specific build.
@@ -429,7 +467,7 @@ class Jenkins:
             'GET',
             rest_endpoint.BUILD_ARTIFACTS(folder=folder, name=name, number=number),
         )
-        return [Artifact.model_validate(a) for a in response.json().get('artifacts', [])]
+        return [Artifact.model_validate(a) for a in _safe_json(response).get('artifacts', [])]
 
     def get_build_artifact(self, *, fullname: str, number: int, relative_path: str) -> bytes:
         """Download the content of a specific artifact from a build.
@@ -501,7 +539,7 @@ class Jenkins:
 
         items = []
 
-        item_stack = [(0, [], response.json()['jobs'])]
+        item_stack = [(0, [], _safe_json(response)['jobs'])]
         for level, path, level_items in item_stack:
             current_items = level_items if isinstance(level_items, list) else [level_items]
 
@@ -528,7 +566,7 @@ class Jenkins:
         """
         folder, name = self._parse_fullname(fullname)
         response = self.request('GET', rest_endpoint.ITEM(folder=folder, name=name, depth=depth))
-        return serialize_item(response.json())
+        return serialize_item(_safe_json(response))
 
     def get_item_config(self, *, fullname: str) -> str:
         """Get item configuration by its fullname.
@@ -640,7 +678,7 @@ class Jenkins:
             A list of plugin dictionaries.
         """
         response = self.request('GET', rest_endpoint.PLUGIN_LIST(depth=depth))
-        return response.json().get('plugins', [])
+        return _safe_json(response).get('plugins', [])
 
     def get_plugin(self, *, short_name: str, depth: int = 2) -> dict | None:
         """Get a specific plugin by short name.
@@ -805,7 +843,7 @@ class Jenkins:
             A list of plugins that can be downgraded.
         """
         response = self.request('GET', rest_endpoint.PLUGIN_LIST(depth=depth))
-        plugins = response.json().get('plugins', [])
+        plugins = _safe_json(response).get('plugins', [])
         return [
             {
                 'shortName': p.get('shortName'),
