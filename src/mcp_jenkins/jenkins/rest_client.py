@@ -32,13 +32,14 @@ class Jenkins:
         password: str,
         timeout: int = 75,
         verify_ssl: bool = True,
+        session: requests.Session | None = None,
     ) -> None:
         self.url = url
         self.timeout = timeout
 
         self._crumb_header = None
 
-        self._session = requests.Session()
+        self._session = session or requests.Session()
         self._session.auth = HTTPBasicAuth(username, password)
         self._session.verify = verify_ssl
 

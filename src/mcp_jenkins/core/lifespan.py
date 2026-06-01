@@ -21,6 +21,8 @@ class LifespanContext(BaseModel):
 
     jenkins_session_singleton: bool = True
 
+    jenkins_iap_domain: str | None = None
+
 
 @asynccontextmanager
 async def lifespan(app: FastMCP[LifespanContext]) -> AsyncIterator['LifespanContext']:
@@ -31,6 +33,7 @@ async def lifespan(app: FastMCP[LifespanContext]) -> AsyncIterator['LifespanCont
     jenkins_timeout = int(os.getenv('jenkins_timeout', '5'))
     jenkins_verify_ssl = os.getenv('jenkins_verify_ssl', 'true').lower() == 'true'
     jenkins_session_singleton = os.getenv('jenkins_session_singleton', 'true').lower() == 'true'
+    jenkins_iap_domain = os.getenv('jenkins_iap_domain')
 
     yield LifespanContext(
         jenkins_url=jenkins_url,
@@ -39,6 +42,7 @@ async def lifespan(app: FastMCP[LifespanContext]) -> AsyncIterator['LifespanCont
         jenkins_timeout=jenkins_timeout,
         jenkins_verify_ssl=jenkins_verify_ssl,
         jenkins_session_singleton=jenkins_session_singleton,
+        jenkins_iap_domain=jenkins_iap_domain,
     )
 
 
@@ -76,10 +80,18 @@ def jenkins(ctx: Context) -> Jenkins:
         )
         raise ValueError(msg)
 
+    iap_domain = ctx.request_context.lifespan_context.jenkins_iap_domain
     logger.info(
         f'Creating Jenkins client with url: '
         f'{jenkins_url}, username: {jenkins_username}, timeout: {jenkins_timeout}, verify_ssl: {jenkins_verify_ssl}'
+        f'{", iap_domain: " + iap_domain if iap_domain else ""}'
     )
+
+    session = None
+    if iap_domain:
+        from mcp_jenkins.jenkins.iap_session import IAPSession
+
+        session = IAPSession(iap_domain=iap_domain)
 
     ctx.session.jenkins = Jenkins(
         url=jenkins_url,
@@ -87,6 +99,7 @@ def jenkins(ctx: Context) -> Jenkins:
         password=jenkins_password,
         timeout=jenkins_timeout,
         verify_ssl=jenkins_verify_ssl,
+        session=session,
     )
 
     return ctx.session.jenkins
