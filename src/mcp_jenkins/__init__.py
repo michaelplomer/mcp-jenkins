@@ -38,6 +38,11 @@ if sys.platform == 'win32':
     help='(Deprecated) Regex pattern to enable specific tools',
 )
 @click.option(
+    '--jenkins-iap-domain',
+    default=None,
+    help='Domain to read IAP cookies for from Chrome (enables IAP passthrough)',
+)
+@click.option(
     '--jenkins-session-singleton/--no-jenkins-session-singleton',
     default=True,
     help='In the same session, does it share the Jenkins request instance, '
@@ -64,6 +69,7 @@ def main(
     jenkins_password: str,
     jenkins_timeout: int,
     jenkins_verify_ssl: bool,  # noqa: FBT001
+    jenkins_iap_domain: str | None,
     read_only: bool,  # noqa: FBT001
     tool_regex: str,
     jenkins_session_singleton: bool,  # noqa: FBT001
@@ -81,6 +87,9 @@ def main(
     os.environ['jenkins_timeout'] = str(jenkins_timeout)
     os.environ['jenkins_verify_ssl'] = str(jenkins_verify_ssl).lower()
     os.environ['jenkins_session_singleton'] = str(jenkins_session_singleton).lower()
+
+    if jenkins_iap_domain:
+        os.environ['jenkins_iap_domain'] = jenkins_iap_domain
 
     from mcp_jenkins.server import mcp
 
