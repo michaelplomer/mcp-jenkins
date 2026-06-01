@@ -43,6 +43,12 @@ if sys.platform == 'win32':
     help='Domain to read IAP cookies for from Chrome (enables IAP passthrough)',
 )
 @click.option(
+    '--jenkins-chrome-profile',
+    default=None,
+    help='Chrome profile directory name to read cookies from (e.g. "Profile 1"). '
+    'Required when the Default profile does not exist.',
+)
+@click.option(
     '--jenkins-session-singleton/--no-jenkins-session-singleton',
     default=True,
     help='In the same session, does it share the Jenkins request instance, '
@@ -70,6 +76,7 @@ def main(
     jenkins_timeout: int,
     jenkins_verify_ssl: bool,  # noqa: FBT001
     jenkins_iap_domain: str | None,
+    jenkins_chrome_profile: str | None,
     read_only: bool,  # noqa: FBT001
     tool_regex: str,
     jenkins_session_singleton: bool,  # noqa: FBT001
@@ -90,6 +97,8 @@ def main(
 
     if jenkins_iap_domain:
         os.environ['jenkins_iap_domain'] = jenkins_iap_domain
+    if jenkins_chrome_profile:
+        os.environ['jenkins_chrome_profile'] = jenkins_chrome_profile
 
     from mcp_jenkins.server import mcp
 

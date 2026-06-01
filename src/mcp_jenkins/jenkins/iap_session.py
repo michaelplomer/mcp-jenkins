@@ -13,6 +13,56 @@ def _mask_cookie_header(header: str) -> str:
     return _MASK_RE.sub(r'\1…', header)
 
 
+def _load_iap_cookies(domain: str, chrome_profile: str | None) -> dict[str, str]:
+    """Read IAP cookies from Chrome for the given domain.
+
+    Tries the exact domain first, then with a leading dot, across the
+    specified Chrome profile (or all profiles if None).
+    """
+    kwargs = {}
+    if chrome_profile:
+        kwargs['cookie_file'] = _chrome_cookie_path(chrome_profile)
+
+    iap_cookies: dict[str, str] = {}
+    for query_domain in (domain, f'.{domain}'):
+        try:
+            cj = browser_cookie3.chrome(domain_name=query_domain, **kwargs)
+            all_cookies = {c.name: c.value for c in cj}
+            found = {k: v for k, v in all_cookies.items() if 'IAP' in k.upper()}
+            logger.debug(
+                f'Chrome cookie lookup for {query_domain!r}'
+                f'{" (profile: " + chrome_profile + ")" if chrome_profile else ""}: '
+                f'{len(all_cookies)} total, {len(found)} IAP — '
+                f'names: {list(found.keys()) or "(none)"}'
+            )
+            iap_cookies.update(found)
+        except Exception as exc:
+            logger.warning(f'Failed to read Chrome cookies for {query_domain!r}: {exc!r}')
+
+    return iap_cookies
+
+
+def _chrome_cookie_path(profile_name: str) -> str:
+    """Return the Cookies DB path for a named Chrome profile."""
+    import platform
+    from pathlib import Path
+
+    system = platform.system()
+    if system == 'Darwin':
+        base = Path.home() / 'Library' / 'Application Support' / 'Google' / 'Chrome'
+    elif system == 'Linux':
+        base = Path.home() / '.config' / 'google-chrome'
+    elif system == 'Windows':
+        base = Path.home() / 'AppData' / 'Local' / 'Google' / 'Chrome' / 'User Data'
+    else:
+        msg = f'Unsupported platform for Chrome cookie lookup: {system}'
+        raise RuntimeError(msg)
+
+    cookie_path = base / profile_name / 'Cookies'
+    logger.debug(f'Resolved Chrome cookie DB path: {cookie_path}')
+    return str(cookie_path)
+
+
 class IAPSession(requests.Session):
     """A requests.Session that injects live IAP cookies from Chrome on every request.
 
@@ -20,26 +70,18 @@ class IAPSession(requests.Session):
     IAP session refreshes mid-run are picked up automatically.
     """
 
-    def __init__(self, iap_domain: str, **kwargs) -> None:
+    def __init__(self, iap_domain: str, chrome_profile: str | None = None, **kwargs) -> None:
         super().__init__(**kwargs)
         self._iap_domain = iap_domain
-        logger.info(f'IAPSession initialised for domain: {iap_domain}')
+        self._chrome_profile = chrome_profile
+        logger.info(
+            f'IAPSession initialised for domain: {iap_domain}'
+            f'{", chrome_profile: " + chrome_profile if chrome_profile else ""}'
+        )
 
     def request(self, method, url, **kwargs):
         domain = urlparse(url).hostname or self._iap_domain
-        try:
-            cj = browser_cookie3.chrome(domain_name=f'.{domain}')
-            all_cookies = {c.name: c.value for c in cj}
-            iap_cookies = {k: v for k, v in all_cookies.items() if 'IAP' in k.upper()}
-            logger.debug(
-                f'Chrome cookie lookup for .{domain}: '
-                f'{len(all_cookies)} total cookie(s), '
-                f'{len(iap_cookies)} IAP cookie(s), '
-                f'IAP cookie names: {list(iap_cookies.keys()) or "(none)"}'
-            )
-        except Exception as exc:
-            logger.warning(f'Failed to read Chrome cookies for {domain}: {exc!r}')
-            iap_cookies = {}
+        iap_cookies = _load_iap_cookies(domain, self._chrome_profile)
 
         if iap_cookies:
             existing = kwargs.get('headers') or {}

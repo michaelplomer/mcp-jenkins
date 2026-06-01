@@ -22,6 +22,7 @@ class LifespanContext(BaseModel):
     jenkins_session_singleton: bool = True
 
     jenkins_iap_domain: str | None = None
+    jenkins_chrome_profile: str | None = None
 
 
 @asynccontextmanager
@@ -34,6 +35,7 @@ async def lifespan(app: FastMCP[LifespanContext]) -> AsyncIterator['LifespanCont
     jenkins_verify_ssl = os.getenv('jenkins_verify_ssl', 'true').lower() == 'true'
     jenkins_session_singleton = os.getenv('jenkins_session_singleton', 'true').lower() == 'true'
     jenkins_iap_domain = os.getenv('jenkins_iap_domain')
+    jenkins_chrome_profile = os.getenv('jenkins_chrome_profile')
 
     yield LifespanContext(
         jenkins_url=jenkins_url,
@@ -43,6 +45,7 @@ async def lifespan(app: FastMCP[LifespanContext]) -> AsyncIterator['LifespanCont
         jenkins_verify_ssl=jenkins_verify_ssl,
         jenkins_session_singleton=jenkins_session_singleton,
         jenkins_iap_domain=jenkins_iap_domain,
+        jenkins_chrome_profile=jenkins_chrome_profile,
     )
 
 
@@ -91,7 +94,8 @@ def jenkins(ctx: Context) -> Jenkins:
     if iap_domain:
         from mcp_jenkins.jenkins.iap_session import IAPSession
 
-        session = IAPSession(iap_domain=iap_domain)
+        chrome_profile = ctx.request_context.lifespan_context.jenkins_chrome_profile
+        session = IAPSession(iap_domain=iap_domain, chrome_profile=chrome_profile)
 
     ctx.session.jenkins = Jenkins(
         url=jenkins_url,
